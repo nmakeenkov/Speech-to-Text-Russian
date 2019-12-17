@@ -1,4 +1,5 @@
 #!/usr/bin/python
+# -*- coding: utf-8 -*-
 import os
 import base64
 import sys
@@ -9,17 +10,20 @@ import librosa
 from librosa import display
 from time import time, gmtime, strftime
 from pathlib import Path
-from flask import Flask, render_template, request, redirect, flash
+from flask import Flask, render_template, request, redirect, flash, jsonify
+import uuid
 
 sys.path.append('..')
 from tools import data_preparator, segmenter, recognizer, transcriptions_parser
-from tools.utils import make_ass, make_wav_scp, delete_folder
+from tools.utils import make_ass, make_wav_scp, delete_folder, ThreadPool
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = '8dgn89vdf8vff8v9df99f'
-app.config['ALLOWED_EXTENSIONS'] = ['wav']
+app.config['ALLOWED_EXTENSIONS'] = ['ogg']
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024
-app.config['UPLOAD_FOLDER'] = Path('data')
+app.config['UPLOAD_FOLDER'] = Path('/archive')
+
+tp = ThreadPool(queue_threads=16)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
@@ -55,46 +59,63 @@ def plot_waveform(temp, wav, channels):
     waveform = str(base64.b64encode(open(waveform, 'rb').read()))[2: -1]
     return waveform
 
+def perform_conversion(file_id):
+    res = str(app.config['UPLOAD_FOLDER'] / (file_id + ".res"))
+    try:
+        filename = file_id + ".ogg"
+        ogg = str(app.config['UPLOAD_FOLDER'] / filename)
+        os.system('ffmpeg -i {0}.ogg {0}.wav'.format(str(app.config['UPLOAD_FOLDER'] / file_id)))
+        wav = ogg[:-3] + "wav"
+        temp = str(app.config['UPLOAD_FOLDER'] / Path(wav).stem)
+        os.makedirs(temp, exist_ok=True)
+        transcriptions = recognize(temp, wav)
+        delete_folder(temp)
+        os.remove(wav)
+        os.remove(ogg)
+        transcriptions = transcriptions[['Text']]
+        result = transcriptions.values[0][0]
+        with open(res, 'w') as f:
+            f.write(result)
+    except Exception as e:
+        print(e)
+        with open(res, 'w') as f:
+            f.write('xxxFAILxxx')
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
-@app.route('/results', methods=['POST'])
+@app.route('/upload', methods=['POST'])
 def upload_file():
     if request.method == 'POST':
         if 'file' not in request.files:
             flash('Отсутствует файл')
-            return redirect('/')
+            return jsonify({'error': 'Отсутствует файл'})
         file = request.files['file']
         if file.filename == '':
             flash('Не выбран файл для загрузки')
-            return redirect('/')
+            return jsonify({'error': 'Не выбран файл для загрузки'})
         if not allowed_file(file.filename):
-            flash('Файл должен иметь расширение .WAV')
-            return redirect('/')
-        filename = file.filename.replace(' ', '_')
+            flash('Файл должен иметь расширение .ogg')
+            return jsonify({'error': 'Файл должен иметь расширение .ogg'})
+        file_id = str(uuid.uuid4())
+        filename = file_id + ".ogg"
         wav = str(app.config['UPLOAD_FOLDER'] / filename)
         file.save(wav)
-        wav_info = sox.file_info.info(wav)
-        info = {}
-        info['Длительность аудио'] = str(round(wav_info['duration'], 2)) + ' с'
-        info['Число каналов'] = wav_info['channels']
-        info['Частота дискретизации'] = str(int(wav_info['sample_rate'])) + ' Гц'
-        start_time = time()
-        temp = str(app.config['UPLOAD_FOLDER'] / Path(wav).stem)
-        os.makedirs(temp, exist_ok=True)
-        transcriptions = recognize(temp, wav)
-        waveform = plot_waveform(temp, wav, wav_info['channels']) if request.form.get('plotWaveform') else None
-        delete_folder(temp)
-        os.remove(wav)
-        info['Время выполнения'] = str(round(time() - start_time, 2)) + ' с'
-        transcriptions = transcriptions[['Name', 'Start', 'End', 'Text']]
-        transcriptions.columns = ['Канал', 'Начало', 'Конец', 'Текст']
-        with pd.option_context('display.max_colwidth', -1):
-            transcriptions_html = transcriptions.to_html(index=False, justify='center', escape=False)        
-        return render_template('results.html', filename='.'.join(filename.split('.')[:-1]), 
-                                info=info, waveform=waveform, transcriptions=transcriptions_html)
+        tp.queue.put({'call': perform_conversion, 'args': (file_id,)})
+        return jsonify({'id': file_id})
     return render_template('index.html')
+
+@app.route('/get/<file_id>', methods=['GET'])
+def get_status(file_id):
+    res = str(app.config['UPLOAD_FOLDER'] / (file_id + ".res"))
+    if not os.path.exists(res):
+        return jsonify({"status": "in_progress"})
+    with open(res, 'r') as f:
+        text = f.read()
+    if text == 'xxxFAILxxx':
+        return jsonify({'status': 'error'})
+    return jsonify({'status': 'completed', 'text': text})
 
 @app.errorhandler(413)
 def request_entity_too_large(e):

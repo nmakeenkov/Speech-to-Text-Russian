@@ -6,6 +6,11 @@ from pathlib import Path
 import pandas as pd
 import wave
 import pysubs2
+from threading import Lock, Thread
+from queue import Queue
+import traceback
+from time import sleep
+import signal
 
 def clear_folder(folder):
     """
@@ -151,3 +156,77 @@ def create_logger(logger_name, logger_type, logger_level, filename=None):
         logger.addHandler(stream_handler)
         logger.setLevel(logger_level)       
     return logger
+
+
+class ThreadPool(object):
+    def __init__(self, queue_threads, *args, **kwargs):
+        self.frozen_pool = kwargs.get('frozen_pool', False)
+        self.print_queue = kwargs.get('print_queue', True)
+        self.pool_results = []
+        self.lock = Lock()
+        self.queue_threads = queue_threads
+        self.queue = Queue()
+        self.threads = []
+
+        for i in range(self.queue_threads):
+            t = Thread(target=self.make_pool_call)
+            t.daemon = True
+            t.start()
+            self.threads.append(t)
+
+    def make_pool_call(self):
+        while True:
+            if self.frozen_pool:
+                #print '--> Queue is frozen'
+                sleep(1)
+                continue
+
+            item = self.queue.get()
+            if item is None:
+                break
+
+            call = item.get('call', None)
+            args = item.get('args', [])
+            kwargs = item.get('kwargs', {})
+            keep_results = item.get('keep_results', False)
+
+            try:
+                result = call(*args, **kwargs)
+
+                if keep_results:
+                    self.lock.acquire()
+                    self.pool_results.append((item, result))
+                    self.lock.release()
+
+            except Exception as e:
+                self.lock.acquire()
+                print(e)
+                traceback.print_exc()
+                self.lock.release()
+                os.kill(os.getpid(), signal.SIGUSR1)
+
+            self.queue.task_done()
+
+    def finish_pool_queue(self):
+        self.frozen_pool = False
+
+        while self.queue.unfinished_tasks > 0:
+            if self.print_queue:
+                pass
+            sleep(5)
+
+        self.queue.join()
+
+        for i in range(self.queue_threads):
+            self.queue.put(None)
+
+        for t in self.threads:
+            t.join()
+
+        del self.threads[:]
+
+    def get_pool_results(self):
+        return self.pool_results
+
+    def clear_pool_results(self):
+        del self.pool_results[:]

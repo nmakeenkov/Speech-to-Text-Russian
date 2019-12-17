@@ -19,8 +19,15 @@ RUN pip install --upgrade pip \
 	flask \
 	soundfile
 
+RUN apt update && apt install ffmpeg gunicorn3 vim --yes
+
 # Копирование файлов проекта
 RUN mkdir speech_recognition	
 WORKDIR speech_recognition
 RUN echo "cat motd" >> /root/.bashrc
 COPY . ./
+
+WORKDIR web
+EXPOSE 5000
+CMD ["gunicorn3", "--workers", "1", "-b", "0.0.0.0:5000", "--timeout", "60", "app:app"]
+

@@ -13,7 +13,7 @@
     <body>
         <h1 class="h1 text-primary">Демо-стенд распознавания речи</h1>
         <img class="logo" src="{{ url_for('static', filename='images/logo.jpg') }}" />
-        <form method="POST" action="/results" enctype="multipart/form-data">
+        <form method="POST" action="/upload" enctype="multipart/form-data">
             <ul>
                 <li>Поддерживаемые форматы: .wav</li>
                 <li>Максимальный размер файла: 20 Мб</li>
