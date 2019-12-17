@@ -85,8 +85,8 @@ def perform_conversion(file_id):
 def index():
     return render_template('index.html')
 
-@app.route('/upload', methods=['POST'])
-def upload_file():
+@app.route('/upload_post', methods=['POST'])
+def upload_post():
     if request.method == 'POST':
         if 'file' not in request.files:
             flash('Отсутствует файл')
@@ -106,15 +106,27 @@ def upload_file():
         return jsonify({'id': file_id})
     return render_template('index.html')
 
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if request.method == 'POST':
+        file_id = str(uuid.uuid4())
+        filename = file_id + ".ogg"
+        wav = str(app.config['UPLOAD_FOLDER'] / filename)
+        file = request.get_data()
+        with open(wav, 'wb') as f:
+            f.write(file)
+        tp.queue.put({'call': perform_conversion, 'args': (file_id,)})
+        return jsonify({'id': file_id})
+
 @app.route('/get/<file_id>', methods=['GET'])
 def get_status(file_id):
     res = str(app.config['UPLOAD_FOLDER'] / (file_id + ".res"))
     if not os.path.exists(res):
-        return jsonify({"status": "in_progress"})
+        return jsonify({"status": "in_progress", "id": file_id})
     with open(res, 'r') as f:
         text = f.read()
     if text == 'xxxFAILxxx':
-        return jsonify({'status': 'error'})
+        return jsonify({'status': 'error', "id": file_id})
     return jsonify({'status': 'completed', 'text': text})
 
 @app.errorhandler(413)
